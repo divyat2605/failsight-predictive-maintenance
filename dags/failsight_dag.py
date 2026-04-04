@@ -1,3 +1,5 @@
+# Kept for reference — orchestration handled by pipelines/scheduler.py
+
 """
 Airflow DAG: FailSight end-to-end pipeline
 Runs: ingest → features → train → weibull → vectorstore rebuild

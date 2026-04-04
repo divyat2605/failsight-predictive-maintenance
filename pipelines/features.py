@@ -77,6 +77,10 @@ def run_feature_engineering():
     print("Adding cycle ratio...")
     df = add_cycle_features(df)
 
+    print("Detecting anomalies...")
+    from analysis.anomaly_detection import detect_fleet_anomalies
+    df = detect_fleet_anomalies(df)
+
     out_path = os.path.join(DATA_PROCESSED_DIR, "features.parquet")
     df.to_parquet(out_path, index=False)
     print(f"Feature engineering complete. Shape: {df.shape}")

@@ -13,7 +13,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 import lightgbm as lgb
 from config import DATA_PROCESSED_DIR, MODELS_DIR, RANDOM_STATE, TEST_SIZE
 
-EXCLUDE_COLS = ["unit", "cycle", "subset", "split", "rul"]
+EXCLUDE_COLS = ["unit", "cycle", "subset", "split", "rul", "anomaly_score", "is_anomaly", "anomaly_severity"]
 
 
 def get_feature_cols(df: pd.DataFrame) -> list:

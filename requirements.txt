@@ -17,5 +17,6 @@ chromadb==0.4.24
 python-dotenv==1.0.1
 #requests==2.31.0 - no http calls in database,so not needed
 joblib==1.3.2
+apscheduler
 sentence-transformers # for huggingface embeddings 
 onnxruntime==1.16.3

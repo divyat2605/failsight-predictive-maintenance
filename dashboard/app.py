@@ -70,7 +70,7 @@ def load_data():
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 st.sidebar.markdown("## ⚡ FailSight")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("Navigation", ["Dashboard", "Unit Explorer", "Reliability Analysis", "AI Agent"])
+page = st.sidebar.radio("Navigation", ["Dashboard", "Unit Explorer", "Anomaly Explorer", "Reliability Analysis", "AI Agent"])
 
 subset_filter = st.sidebar.multiselect(
     "Filter by Subset",
@@ -106,8 +106,9 @@ if page == "Dashboard":
     n_warning = (latest_f["status"] == "WARNING").sum()
     n_healthy = (latest_f["status"] == "HEALTHY").sum()
     avg_rul = latest_f["predicted_rul"].mean()
+    n_anomalous = df_full.groupby("unit")["is_anomaly"].any().sum()
 
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
     with k1:
         st.markdown(f"""<div class='metric-card'><div class='metric-value'>{n_total}</div><div class='metric-label'>Total Units</div></div>""", unsafe_allow_html=True)
     with k2:
@@ -118,6 +119,8 @@ if page == "Dashboard":
         st.markdown(f"""<div class='metric-card'><div class='metric-value healthy'>{n_healthy}</div><div class='metric-label'>HEALTHY</div></div>""", unsafe_allow_html=True)
     with k5:
         st.markdown(f"""<div class='metric-card'><div class='metric-value'>{avg_rul:.0f}</div><div class='metric-label'>Avg Fleet RUL</div></div>""", unsafe_allow_html=True)
+    with k6:
+        st.markdown(f"""<div class='metric-card'><div class='metric-value'>{n_anomalous}</div><div class='metric-label'>Units w/ Anomalies</div></div>""", unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -182,10 +185,12 @@ elif page == "Unit Explorer":
     unit_data = df_full[df_full["unit"] == selected_unit].sort_values("cycle")
     unit_latest = latest_f[latest_f["unit"] == selected_unit].iloc[0]
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Predicted RUL", f"{unit_latest['predicted_rul']:.0f} cycles")
     col2.metric("Status", unit_latest["status"])
     col3.metric("Current Cycle", int(unit_latest["cycle"]))
+    anomaly_rate = unit_data["is_anomaly"].mean() * 100
+    col4.metric("Anomaly Rate", f"{anomaly_rate:.1f}%")
 
     sensor_cols = [c for c in unit_data.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
     selected_sensor = st.selectbox("Sensor to plot", sensor_cols)
@@ -193,6 +198,13 @@ elif page == "Unit Explorer":
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=unit_data["cycle"], y=unit_data[selected_sensor],
                              mode="lines", name=selected_sensor, line=dict(color="#89b4fa")))
+    
+    # Add red markers for anomalies
+    anomaly_cycles = unit_data[unit_data["is_anomaly"]]["cycle"]
+    if not anomaly_cycles.empty:
+        fig.add_trace(go.Scatter(x=anomaly_cycles, y=unit_data.loc[unit_data["is_anomaly"], selected_sensor],
+                                 mode="markers", name="Anomalies", marker=dict(color="red", size=8, symbol="x")))
+    
     fig.update_layout(
         title=f"Unit {selected_unit} — {selected_sensor} over cycles",
         paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4"
@@ -206,6 +218,40 @@ elif page == "Unit Explorer":
         fig2.update_layout(title="Degradation Index", paper_bgcolor="#1e1e2e",
                            plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
         st.plotly_chart(fig2, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 2.5: Anomaly Explorer
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Anomaly Explorer":
+    st.title("🔍 Anomaly Explorer")
+    
+    # Anomaly summary
+    from analysis.anomaly_detection import get_anomaly_summary
+    anomaly_summary = get_anomaly_summary(df_full)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Anomaly Rate Heatmap")
+        heatmap_data = anomaly_summary.pivot_table(values="anomaly_rate", index="unit", columns="subset", aggfunc="mean").fillna(0)
+        fig = px.imshow(heatmap_data, aspect="auto", color_continuous_scale="Reds")
+        fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("Top 10 Most Anomalous Units")
+        top_anomalous = anomaly_summary.nlargest(10, "anomaly_rate")[["unit", "anomaly_rate", "first_anomaly_cycle"]]
+        top_anomalous["anomaly_rate"] = (top_anomalous["anomaly_rate"] * 100).round(1).astype(str) + "%"
+        st.dataframe(top_anomalous, use_container_width=True)
+    
+    st.subheader("First Anomaly Cycle vs Predicted RUL")
+    merged = anomaly_summary.merge(latest_f[["unit", "predicted_rul"]], on="unit", how="left")
+    fig = px.scatter(merged, x="first_anomaly_cycle", y="predicted_rul", 
+                     hover_data=["unit"], color="anomaly_rate",
+                     color_continuous_scale="Reds")
+    fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

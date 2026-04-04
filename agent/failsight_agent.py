@@ -94,7 +94,9 @@ def get_rul_snapshot(state: AgentState) -> AgentState:
             "warning": len(warning),
             "healthy": len(latest) - len(critical) - len(warning),
             "critical_units": critical["unit"].tolist()[:10],
-            "avg_fleet_rul": round(latest["predicted_rul"].mean(), 1)
+            "avg_fleet_rul": round(latest["predicted_rul"].mean(), 1),
+            "units_with_anomalies": df.groupby("unit")["is_anomaly"].any().sum(),
+            "avg_anomaly_rate": round(df["is_anomaly"].mean() * 100, 1)
         }
         rul_data = json.dumps(summary)
     except Exception as e:
@@ -116,7 +118,7 @@ Fleet RUL snapshot (live):
 Retrieved fleet context:
 {state['retrieved_context']}
 
-Answer the query clearly and concisely. If units are critical, highlight them.
+Answer the query clearly and concisely. If units are critical or have anomalies, highlight them.
 If the query asks for a failure report, generate a structured one with:
 - Unit ID
 - Current cycle
