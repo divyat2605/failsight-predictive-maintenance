@@ -6,6 +6,9 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -17,6 +20,7 @@ from config import (
 )
 from models.train_rul import predict_rul
 from analysis.spare_parts import forecast_demand, weekly_demand_curve
+from agent.failsight_agent import run_agent
 
 st.set_page_config(
     page_title="FailSight",
@@ -70,7 +74,7 @@ def load_data():
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 st.sidebar.markdown("## ⚡ FailSight")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("Navigation", ["Dashboard", "Unit Explorer", "Anomaly Explorer", "Reliability Analysis", "AI Agent"])
+page = st.sidebar.radio("Navigation", ["Dashboard", "Data Exploration", "Unit Explorer", "Anomaly Explorer", "Reliability Analysis", "AI Agent"])
 
 subset_filter = st.sidebar.multiselect(
     "Filter by Subset",
@@ -175,6 +179,227 @@ if page == "Dashboard":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PAGE 1.5: Data Exploration (EDA & Feature Engineering)
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Data Exploration":
+    st.title("📊 Data Exploration & Feature Analysis")
+    st.caption("Understand preprocessing pipeline, feature engineering, and data distributions")
+
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📈 Dataset Overview",
+        "📉 Feature Distributions",
+        "🔗 Correlations",
+        "📍 Time Series",
+        "⚙️ Feature Impact",
+        "🔴 Anomaly Insights"
+    ])
+
+    # ─ TAB 1: Dataset Overview ─
+    with tab1:
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Total Units", len(df_full["unit"].unique()))
+        col2.metric("Total Cycles", len(df_full))
+        col3.metric("Features", len([c for c in df_full.columns if c not in ["unit", "cycle", "subset", "split", "rul"]]))
+        col4.metric("Subsets", len(df_full["subset"].unique()))
+        col5.metric("Memory (MB)", f"{df_full.memory_usage(deep=True).sum() / 1024 / 1024:.1f}")
+
+        st.markdown("### Subset Distribution")
+        subset_dist = df_full["subset"].value_counts()
+        fig = px.pie(values=subset_dist.values, names=subset_dist.index, hole=0.4,
+                     color_discrete_sequence=["#89b4fa", "#f38ba8", "#a6e3a1", "#fab387"])
+        fig.update_layout(paper_bgcolor="#1e1e2e", font_color="#cdd6f4")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Feature Categories")
+        sensor_cols = [c for c in df_full.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
+        rolling_cols = [c for c in df_full.columns if "_roll" in c]
+        lag_cols = [c for c in df_full.columns if "_lag" in c]
+        anomaly_cols = [c for c in df_full.columns if c.startswith("anomaly")]
+        derived_cols = [c for c in df_full.columns if c in ["degradation_index", "cycle_ratio"]]
+
+        feat_summary = pd.DataFrame({
+            "Feature Type": ["Raw Sensors", "Rolling Statistics", "Lag Features", "Anomaly Features", "Derived Features"],
+            "Count": [len(sensor_cols), len(rolling_cols), len(lag_cols), len(anomaly_cols), len(derived_cols)]
+        })
+        st.dataframe(feat_summary, use_container_width=True, hide_index=True)
+
+    # ─ TAB 2: Feature Distributions ─
+    with tab2:
+        col_type = st.radio("Select Feature Type", ["Raw Sensors", "Engineered Features", "RUL Target"])
+
+        if col_type == "Raw Sensors":
+            sensor_cols_all = [c for c in df_full.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
+            selected_sensor = st.selectbox("Sensor", sensor_cols_all)
+            fig = px.histogram(df_full, x=selected_sensor, nbins=50, color="subset",
+                               color_discrete_map={"FD001": "#89b4fa", "FD002": "#f38ba8", "FD003": "#a6e3a1", "FD004": "#fab387"},
+                               title=f"Distribution of {selected_sensor}")
+            fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif col_type == "Engineered Features":
+            eng_cols = ["degradation_index", "cycle_ratio"]
+            selected_eng = st.selectbox("Engineered Feature", eng_cols)
+            fig = px.histogram(df_full, x=selected_eng, nbins=50, color="subset",
+                               color_discrete_map={"FD001": "#89b4fa", "FD002": "#f38ba8", "FD003": "#a6e3a1", "FD004": "#fab387"},
+                               title=f"Distribution of {selected_eng}")
+            fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif col_type == "RUL Target":
+            fig = px.histogram(df_full, x="rul", nbins=50, color="subset",
+                               color_discrete_map={"FD001": "#89b4fa", "FD002": "#f38ba8", "FD003": "#a6e3a1", "FD004": "#fab387"},
+                               title="RUL Distribution Across Fleet")
+            fig.add_vline(x=RUL_CRITICAL_THRESHOLD, line_dash="dash", line_color="#f38ba8", annotation_text="Critical")
+            fig.add_vline(x=RUL_WARNING_THRESHOLD, line_dash="dash", line_color="#fab387", annotation_text="Warning")
+            fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ─ TAB 3: Correlations ─
+    with tab3:
+        corr_type = st.radio("Correlation Type", ["All Features vs RUL", "Raw Sensors Only", "Full Feature Heatmap"])
+
+        if corr_type == "All Features vs RUL":
+            sensor_cols_all = [c for c in df_full.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
+            key_features = sensor_cols_all + ["degradation_index", "cycle_ratio", "anomaly_severity"]
+            corr_rul = df_full[key_features + ["rul"]].corr()["rul"].drop("rul").sort_values()
+            fig = px.bar(x=corr_rul.values, y=corr_rul.index, orientation="h", title="Feature Correlation with RUL",
+                         color=corr_rul.values, color_continuous_scale="RdBu", color_continuous_midpoint=0)
+            fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif corr_type == "Raw Sensors Only":
+            sensor_cols_all = [c for c in df_full.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
+            corr_sensors = df_full[sensor_cols_all].corr()
+            fig = px.imshow(corr_sensors, color_continuous_scale="RdBu", color_continuous_midpoint=0,
+                            title="Sensor-to-Sensor Correlations", aspect="auto")
+            fig.update_layout(paper_bgcolor="#1e1e2e", font_color="#cdd6f4")
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif corr_type == "Full Feature Heatmap":
+            sensor_cols_all = [c for c in df_full.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
+            key_features = sensor_cols_all + ["degradation_index", "cycle_ratio", "rul"]
+            corr_all = df_full[key_features].corr()
+            fig = px.imshow(corr_all, color_continuous_scale="RdBu", color_continuous_midpoint=0,
+                            title="Full Feature Correlation Matrix", aspect="auto")
+            fig.update_layout(paper_bgcolor="#1e1e2e", font_color="#cdd6f4")
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ─ TAB 4: Time Series Analysis ─
+    with tab4:
+        unit_ids = sorted(df_full[df_full["subset"].isin(subset_filter)]["unit"].unique().tolist())
+        selected_unit = st.selectbox("Select Unit", unit_ids, key="ts_unit")
+        unit_data = df_full[df_full["unit"] == selected_unit].sort_values("cycle")
+
+        sensor_cols_all = [c for c in df_full.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
+        selected_sensors = st.multiselect("Sensors to Plot (max 3)", sensor_cols_all, default=[sensor_cols_all[0], sensor_cols_all[1]])[:3]
+
+        fig = go.Figure()
+        for sensor in selected_sensors:
+            fig.add_trace(go.Scatter(x=unit_data["cycle"], y=unit_data[sensor], mode="lines", name=sensor))
+
+        anomaly_cycles = unit_data[unit_data["is_anomaly"]]["cycle"].tolist()
+        if anomaly_cycles:
+            fig.add_vline(x=anomaly_cycles[0], line_dash="dash", line_color="rgba(255, 0, 0, 0.3)", annotation_text="Anomalies")
+
+        fig.update_layout(title=f"Unit {selected_unit} Sensor Time Series",
+                          paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4",
+                          hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
+
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(x=unit_data["cycle"], y=unit_data["rul"], mode="lines+markers",
+                                  name="RUL", line=dict(color="#f38ba8", width=3)))
+        fig2.add_hline(y=RUL_CRITICAL_THRESHOLD, line_dash="dash", line_color="#f38ba8", annotation_text="Critical")
+        fig2.update_layout(title="Remaining Useful Life Trajectory",
+                           paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # ─ TAB 5: Feature Engineering Impact ─
+    with tab5:
+        st.markdown("### Rolling Statistics Impact")
+        st.info("Rolling mean smooths noisy sensor readings; rolling std captures variability.")
+
+        sensor_cols_all = [c for c in df_full.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
+        demo_sensor = st.selectbox("Select Sensor for Demo", sensor_cols_all, key="demo_sensor")
+        demo_unit = st.selectbox("Select Unit", sorted(df_full["unit"].unique()), key="demo_unit")
+
+        unit_data_demo = df_full[df_full["unit"] == demo_unit].sort_values("cycle")
+        rolling_5_col = f"{demo_sensor}_roll_mean_5"
+        rolling_10_col = f"{demo_sensor}_roll_mean_10"
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=unit_data_demo["cycle"], y=unit_data_demo[demo_sensor],
+                                 mode="lines", name="Raw Signal", line=dict(color="rgba(137, 180, 250, 0.3)", width=1)))
+        if rolling_5_col in unit_data_demo.columns:
+            fig.add_trace(go.Scatter(x=unit_data_demo["cycle"], y=unit_data_demo[rolling_5_col],
+                                     mode="lines", name="Rolling Mean (5)", line=dict(color="#89b4fa", width=2)))
+        if rolling_10_col in unit_data_demo.columns:
+            fig.add_trace(go.Scatter(x=unit_data_demo["cycle"], y=unit_data_demo[rolling_10_col],
+                                     mode="lines", name="Rolling Mean (10)", line=dict(color="#f38ba8", width=2)))
+        fig.update_layout(title=f"Feature Engineering: Raw vs Smoothed {demo_sensor}",
+                          paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Engineered Features Summary")
+        eng_info = pd.DataFrame({
+            "Feature Type": ["Rolling Means", "Rolling Std", "Lag Features", "Degradation Index", "Cycle Ratio"],
+            "Description": [
+                "Smooths sensor noise over windows [5, 10, 20]",
+                "Captures sensor variability",
+                "Temporal dependencies at lags [1, 3, 5]",
+                "Composite degradation from all sensors",
+                "Lifecycle position (cycle / max_cycle)"
+            ]
+        })
+        st.dataframe(eng_info, use_container_width=True, hide_index=True)
+
+    # ─ TAB 6: Anomaly Insights ─
+    with tab6:
+        from analysis.anomaly_detection import get_anomaly_summary
+        anomaly_summary = get_anomaly_summary(df_full)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Units with Anomalies", (anomaly_summary["anomaly_count"] > 0).sum())
+        col2.metric("Total Anomalies Detected", anomaly_summary["anomaly_count"].sum())
+        col3.metric("Avg Anomaly Rate", f"{anomaly_summary['anomaly_rate'].mean() * 100:.2f}%")
+
+        st.markdown("### Anomaly Rate by Subset")
+        subset_anomaly = anomaly_summary.groupby("subset")["anomaly_rate"].mean()
+        fig = px.bar(x=subset_anomaly.index, y=subset_anomaly.values * 100,
+                     labels={"x": "Subset", "y": "Anomaly Rate (%)"},
+                     color=subset_anomaly.values, color_continuous_scale="Reds")
+        fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Anomaly Detection Early Warning")
+        merged = anomaly_summary.merge(latest_f[["unit", "predicted_rul"]], on="unit", how="left")
+        merged_valid = merged[merged["anomaly_count"] > 0]
+
+        if len(merged_valid) > 0:
+            fig = px.scatter(merged_valid, x="first_anomaly_cycle", y="predicted_rul",
+                             hover_data=["unit", "anomaly_rate"], size="anomaly_count",
+                             color="anomaly_rate", color_continuous_scale="Reds",
+                             title="Early Anomalies Correlate with Lower RUL")
+            fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No anomalies detected in current dataset")
+
+        st.markdown("### Top Anomalous Sensors")
+        sensor_cols_all = [c for c in df_full.columns if c.startswith("sensor_") and "_roll" not in c and "_lag" not in c]
+        sensor_anomaly_rate = []
+        for sensor in sensor_cols_all:
+            rate = df_full[df_full["is_anomaly"]][sensor].std() / df_full[sensor].std()
+            sensor_anomaly_rate.append({"Sensor": sensor, "Anomaly Severity": rate})
+
+        sensor_anomaly_df = pd.DataFrame(sensor_anomaly_rate).nlargest(10, "Anomaly Severity")
+        fig = px.bar(sensor_anomaly_df, x="Sensor", y="Anomaly Severity",
+                     color="Anomaly Severity", color_continuous_scale="Reds")
+        fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Unit Explorer
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Unit Explorer":
@@ -198,13 +423,12 @@ elif page == "Unit Explorer":
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=unit_data["cycle"], y=unit_data[selected_sensor],
                              mode="lines", name=selected_sensor, line=dict(color="#89b4fa")))
-    
-    # Add red markers for anomalies
+
     anomaly_cycles = unit_data[unit_data["is_anomaly"]]["cycle"]
     if not anomaly_cycles.empty:
         fig.add_trace(go.Scatter(x=anomaly_cycles, y=unit_data.loc[unit_data["is_anomaly"], selected_sensor],
                                  mode="markers", name="Anomalies", marker=dict(color="red", size=8, symbol="x")))
-    
+
     fig.update_layout(
         title=f"Unit {selected_unit} — {selected_sensor} over cycles",
         paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4"
@@ -225,29 +449,28 @@ elif page == "Unit Explorer":
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Anomaly Explorer":
     st.title("🔍 Anomaly Explorer")
-    
-    # Anomaly summary
+
     from analysis.anomaly_detection import get_anomaly_summary
     anomaly_summary = get_anomaly_summary(df_full)
-    
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.subheader("Anomaly Rate Heatmap")
         heatmap_data = anomaly_summary.pivot_table(values="anomaly_rate", index="unit", columns="subset", aggfunc="mean").fillna(0)
         fig = px.imshow(heatmap_data, aspect="auto", color_continuous_scale="Reds")
         fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
         st.plotly_chart(fig, use_container_width=True)
-    
+
     with col2:
         st.subheader("Top 10 Most Anomalous Units")
         top_anomalous = anomaly_summary.nlargest(10, "anomaly_rate")[["unit", "anomaly_rate", "first_anomaly_cycle"]]
         top_anomalous["anomaly_rate"] = (top_anomalous["anomaly_rate"] * 100).round(1).astype(str) + "%"
         st.dataframe(top_anomalous, use_container_width=True)
-    
+
     st.subheader("First Anomaly Cycle vs Predicted RUL")
     merged = anomaly_summary.merge(latest_f[["unit", "predicted_rul"]], on="unit", how="left")
-    fig = px.scatter(merged, x="first_anomaly_cycle", y="predicted_rul", 
+    fig = px.scatter(merged, x="first_anomaly_cycle", y="predicted_rul",
                      hover_data=["unit"], color="anomaly_rate",
                      color_continuous_scale="Reds")
     fig.update_layout(paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font_color="#cdd6f4")
@@ -300,9 +523,16 @@ elif page == "AI Agent":
         with st.chat_message("assistant"):
             with st.spinner("Analyzing fleet..."):
                 try:
-                    from agent.failsight_agent import run_agent
-                    response = run_agent(query)
+                    history_parts = []
+                    for m in st.session_state.messages[:-1]:
+                        history_parts.append(m["role"].upper() + ": " + m["content"])
+                    history = "\n".join(history_parts)
+                    if history:
+                        full_query = "Conversation so far:\n" + history + "\n\nUser: " + query
+                    else:
+                        full_query = query
+                    response = run_agent(full_query)
                 except Exception as e:
-                    response = f"Agent unavailable (check OpenAI API key): {e}"
+                    response = f"Agent error: {e}"
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})

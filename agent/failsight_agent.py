@@ -1,6 +1,8 @@
 """
 LangGraph AI Agent: RAG chatbot + auto failure report generator
 """
+from config import OPENAI_API_KEY
+
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -58,8 +60,10 @@ def load_vectorstore():
 
 
 # ── LLM ───────────────────────────────────────────────────────────────────
+
 def get_llm():
-    return ChatOpenAI(model=LLM_MODEL, temperature=0.2)
+    from config import OPENAI_API_KEY
+    return ChatOpenAI(model=LLM_MODEL, temperature=0.2, api_key=OPENAI_API_KEY)
 
 
 # ── Nodes ──────────────────────────────────────────────────────────────────
@@ -74,7 +78,6 @@ def retrieve_context(state: AgentState) -> AgentState:
 
 
 def get_rul_snapshot(state: AgentState) -> AgentState:
-    """Pull live RUL snapshot from model."""
     try:
         path = os.path.join(DATA_PROCESSED_DIR, "features.parquet")
         df = pd.read_parquet(path)
@@ -89,17 +92,19 @@ def get_rul_snapshot(state: AgentState) -> AgentState:
         ]
 
         summary = {
-            "total_units": len(latest),
-            "critical": len(critical),
-            "warning": len(warning),
-            "healthy": len(latest) - len(critical) - len(warning),
-            "critical_units": critical["unit"].tolist()[:10],
-            "avg_fleet_rul": round(latest["predicted_rul"].mean(), 1),
-            "units_with_anomalies": df.groupby("unit")["is_anomaly"].any().sum(),
-            "avg_anomaly_rate": round(df["is_anomaly"].mean() * 100, 1)
+        "total_units":          int(len(latest)),
+        "critical":             int(len(critical)),
+        "warning":              int(len(warning)),
+        "healthy":              int(len(latest) - len(critical) - len(warning)),
+        "critical_units":       [int(u) for u in critical["unit"].tolist()[:10]],
+        "avg_fleet_rul":        round(float(latest["predicted_rul"].mean()), 1),
+        "units_with_anomalies": int(df.groupby("unit")["is_anomaly"].any().sum()),
+        "avg_anomaly_rate":     round(float(df["is_anomaly"].mean() * 100), 1)
         }
         rul_data = json.dumps(summary)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         rul_data = json.dumps({"error": str(e)})
 
     return {**state, "rul_data": rul_data}
@@ -117,6 +122,7 @@ Fleet RUL snapshot (live):
 
 Retrieved fleet context:
 {state['retrieved_context']}
+Be consistent - always refer to the same units from the live snapshots above.
 
 Answer the query clearly and concisely. If units are critical or have anomalies, highlight them.
 If the query asks for a failure report, generate a structured one with:
