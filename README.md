@@ -346,8 +346,8 @@ Contributions welcome! Areas for enhancement:
 
 ## 📄 License
 
-MIT License — See LICENSE file
-
+Apache License Version 2.0
+                           
 ---
 
 ## 📞 Contact & Support
